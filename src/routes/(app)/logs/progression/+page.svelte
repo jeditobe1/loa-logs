@@ -11,13 +11,17 @@
   import { IconArrowLeft } from "$lib/icons";
   import type { EncounterPreview } from "$lib/types";
   import QuickTooltip from "$lib/components/QuickTooltip.svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     abbreviateNumber,
     formatTimestamp,
     getClassIcon,
+    isNameValid,
     isSupportSpec,
+    LOA_BIBLE_URL,
     timestampToMinutesAndSeconds
   } from "$lib/utils";
+  import { IconExternalLink } from "$lib/icons";
 
 
   const SHORT_THRESHOLD = 15_000;
@@ -120,28 +124,32 @@
 
   let hasPartyInfo = $derived(myPartyNames.size > 0);
 
-  // Party members with class IDs and a link to their most recent attempt in this group
-  let partyMembers = $derived.by((): { name: string; classId: number; latestId: number }[] => {
-    // Collect classId per player name from all stats (first seen wins)
-    const classById = new Map<string, number>();
+  // Region from first stat that has it (for character profile links)
+  let region = $derived(stats.find((s) => s.region)?.region ?? "");
+
+  // Full raid roster grouped by party. Party comp may vary across attempts — use the first stat with partyInfo.
+  let raidGroups = $derived.by((): { title: string; members: { name: string; classId: number }[] }[] => {
+    // name -> classId from all stats (first seen wins)
+    const classMap = new Map<string, number>();
     for (const s of statsInOrder) {
       if (!s) continue;
       for (const p of s.players) {
-        if (!classById.has(p.name)) classById.set(p.name, p.classId);
+        if (!classMap.has(p.name)) classMap.set(p.name, p.classId);
       }
     }
-    // Collect most recent attempt id per player (statsInOrder is oldest-first, so last wins)
-    const latestAttempt = new Map<string, number>();
-    for (let i = 0; i < statsInOrder.length; i++) {
-      const s = statsInOrder[i];
-      const a = attempts[i];
-      if (!s || !a) continue;
-      for (const p of s.players) latestAttempt.set(p.name, a.id);
+    if (classMap.size === 0) return [];
+
+    const partyInfo = stats.find((s) => s.partyInfo)?.partyInfo;
+    if (partyInfo) {
+      return Object.entries(partyInfo)
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([idx, names]) => ({
+          title: `Party ${idx}`,
+          members: names.filter((n) => classMap.has(n)).map((n) => ({ name: n, classId: classMap.get(n)! }))
+        }))
+        .filter((g) => g.members.length > 0);
     }
-    const names = hasPartyInfo ? [...myPartyNames] : [...classById.keys()];
-    return names
-      .filter((n) => classById.has(n))
-      .map((n) => ({ name: n, classId: classById.get(n)!, latestId: latestAttempt.get(n) ?? attempts[0]?.id ?? 0 }));
+    return [{ title: "", members: [...classMap.entries()].map(([name, classId]) => ({ name, classId })) }];
   });
 
   // Helper: get my party's players from a stats entry
@@ -512,18 +520,36 @@
   <p class="rounded-sm bg-neutral-700/80 px-2 py-0.5">{text}</p>
 {/snippet}
 
-{#snippet partyCard()}
-  {#if partyMembers.length > 0}
+{#snippet raidCard()}
+  {#if raidGroups.length > 0}
     <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-4">
-      <h3 class="mb-3 text-sm font-medium text-neutral-400">Party</h3>
-      <div class="flex flex-col gap-2">
-        {#each partyMembers as member}
-          <a href="/logs/{member.latestId}" class="hover:text-accent-500 flex items-center gap-2">
-            <QuickTooltip tooltip={member.name} class="shrink-0">
-              <img src={getClassIcon(member.classId)} alt="class-{member.classId}" class="size-8" />
-            </QuickTooltip>
-            <span class="text-sm" class:text-accent-400={member.name === localPlayer}>{member.name}</span>
-          </a>
+      <h3 class="mb-3 text-sm font-medium text-neutral-400">Raid</h3>
+      <div class="flex flex-wrap gap-x-6 gap-y-4">
+        {#each raidGroups as group}
+          <div class="flex flex-col gap-1">
+            {#if group.title}
+              <p class="mb-1 text-xs text-neutral-500">{group.title}</p>
+            {/if}
+            {#each group.members as member}
+              <div class="flex items-center gap-1.5">
+                <QuickTooltip tooltip={member.name} class="shrink-0">
+                  <img src={getClassIcon(member.classId)} alt="class-{member.classId}" class="size-7" />
+                </QuickTooltip>
+                <span class="truncate text-sm" class:text-accent-400={member.name === localPlayer}>
+                  {member.name}
+                </span>
+                {#if region && isNameValid(member.name)}
+                  <button
+                    class="shrink-0 text-neutral-500 hover:text-neutral-200"
+                    title="View Character Profile"
+                    onclick={() => openUrl(`${LOA_BIBLE_URL}/character/${region}/${member.name}`)}
+                  >
+                    <IconExternalLink class="size-3" />
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/each}
       </div>
     </div>
@@ -652,7 +678,7 @@
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
           {/if}
-          {@render partyCard()}
+          {@render raidCard()}
         {/if}
 
         {#if viewMode === "dps"}
@@ -731,7 +757,7 @@
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
           {/if}
-          {@render partyCard()}
+          {@render raidCard()}
         {/if}
       </div>
 

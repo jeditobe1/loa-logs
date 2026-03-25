@@ -257,6 +257,7 @@ impl Repository {
                 phases: None,
                 wipe_phase: None,
                 wipe_phase_end_hp: None,
+                region: None,
             });
             entry.total_dps += player.dps;
             entry.players.push(player);
@@ -285,6 +286,7 @@ impl Repository {
 
             if let Some(ref m) = misc {
                 entry.party_info = m.party_info.clone();
+                entry.region = m.region.clone();
             }
 
             // Use pre-computed phases if available, otherwise JIT compute

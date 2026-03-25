@@ -86,6 +86,8 @@ pub struct ProgressionEncounterStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub party_info: Option<HashMap<i32, Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub phases: Option<Vec<crate::models::BossPhase>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wipe_phase: Option<u32>,

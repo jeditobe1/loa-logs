@@ -130,6 +130,7 @@ export interface ProgressionEncounterStats {
   totalDps: number;
   players: ProgressionPlayerStats[];
   partyInfo?: Record<number, string[]>;
+  region?: string;
   phases?: BossPhase[];
   wipePhase?: number;
   /** Boss HP remaining (0.0–1.0) at the end of the last phase. Combine with wipePhase for cross-attempt comparison. */
