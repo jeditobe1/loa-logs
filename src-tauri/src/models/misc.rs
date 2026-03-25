@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
@@ -27,6 +28,8 @@ pub struct EncounterPreview {
     pub support_identity: Option<f32>,
     pub support_hyper: Option<f32>,
     pub udps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wipe_bars: Option<i32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -49,6 +52,39 @@ pub struct SearchFilter {
     pub sort: String,
     pub order: String,
     pub raids_only: bool,
+    pub local_player: String,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterInfo {
+    pub name: String,
+    pub max_gear_score: f32,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressionPlayerStats {
+    pub name: String,
+    pub class_id: i32,
+    pub dps: i64,
+    pub is_dead: bool,
+    pub support_ap: Option<f32>,
+    pub support_brand: Option<f32>,
+    pub support_identity: Option<f32>,
+    pub support_hyper: Option<f32>,
+    pub unbuffed_dps: Option<i64>,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressionEncounterStats {
+    pub id: i32,
+    pub total_dps: i64,
+    pub players: Vec<ProgressionPlayerStats>,
+    /// party index -> list of player names (from encounter misc)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub party_info: Option<HashMap<i32, Vec<String>>>,
 }
 
 #[derive(Default, Debug, Serialize)]

@@ -17,6 +17,88 @@ use crate::utils::*;
 
 pub const VERSION_1_13_5: Version = Version::new(1, 13, 5);
 
+pub fn get_boss_hp_bars(boss_name: &str, max_hp: i64) -> Option<i32> {
+    if boss_name == "Phantom Legion Commander Brelshaza" {
+        if max_hp > 100_000_000_000 {
+            return Some(420);
+        } else {
+            return Some(250);
+        }
+    }
+    match boss_name {
+        "Dark Mountain Predator" | "Destroyer Lucas" | "Leader Lugaru" => Some(50),
+        "Demon Beast Commander Valtan" => Some(160),
+        "Ravaged Tyrant of Beasts" => Some(40),
+        "Incubus Morphe" | "Nightmarish Morphe" => Some(60),
+        "Covetous Devourer Vykas" => Some(160),
+        "Covetous Legion Commander Vykas" => Some(180),
+        "Saydon" => Some(160),
+        "Kakul" => Some(140),
+        "Kakul-Saydon" => Some(180),
+        "Encore-Desiring Kakul-Saydon" => Some(77),
+        "Gehenna Helkasirs" => Some(120),
+        "Ashtarot" => Some(170),
+        "Primordial Nightmare" => Some(190),
+        "Brelshaza, Monarch of Nightmares" => Some(200),
+        "Imagined Primordial Nightmare" | "Pseudospace Primordial Nightmare" => Some(20),
+        "Griefbringer Maurug" => Some(150),
+        "Evolved Maurug" => Some(30),
+        "Lord of Degradation Akkan" => Some(190),
+        "Plague Legion Commander Akkan" => Some(220),
+        "Lord of Kartheon Akkan" => Some(300),
+        "Tienis" => Some(110),
+        "Celestial Sentinel" => Some(60),
+        "Prunya" => Some(90),
+        "Lauriel" => Some(200),
+        "Kaltaya, the Blooming Chaos" => Some(120),
+        "Rakathus, the Lurking Arrogance" => Some(160),
+        "Firehorn, Trampler of Earth" => Some(160),
+        "Lazaram, the Trailblazer" => Some(200),
+        "Killineza the Dark Worshipper" => Some(180),
+        "Valinak, Knight of Darkness" | "Valinak, Taboo Usurper" | "Valinak, Herald of the End" => Some(180),
+        "Thaemine the Lightqueller" => Some(300),
+        "Dark Greatsword" => Some(40),
+        "Darkness Legion Commander Thaemine" => Some(350),
+        "Thaemine Prokel" => Some(35),
+        "Thaemine, Conqueror of Stars" => Some(350),
+        "Red Doom Narkiel" => Some(180),
+        "Agris" => Some(100),
+        "Echidna" => Some(285),
+        "Covetous Master Echidna" => Some(285),
+        "Alcaone, the Twisted Venom" => Some(86),
+        "Agris, the Devouring Bog" => Some(103),
+        "Behemoth, the Storm Commander" => Some(500),
+        "Behemoth, Cruel Storm Slayer" => Some(705),
+        "Akkan, Lord of Death" => Some(220),
+        "Aegir, the Oppressor" => Some(300),
+        "Narok the Butcher" => Some(300),
+        "Phantom Manifester Brelshaza" => Some(420),
+        "Thaemine, Master of Darkness" => Some(300),
+        "Infernas" => Some(300),
+        "Blossoming Fear, Naitreya" => Some(300),
+        "Mordum, the Abyssal Punisher" => Some(500),
+        "Flash of Punishment" => Some(350),
+        "Abyssal Beast, Narhash" => Some(100),
+        "Flame of Darkness, Tarkal" => Some(300),
+        "Act 4: Covetous Master Echidna" => Some(300),
+        "Brelshaza, Ember in the Ashes" => Some(450),
+        "Armoche, Sentinel of the Abyss" => Some(450),
+        "Abyss Lord Kazeros" => Some(999),
+        "Archdemon Kazeros" => Some(999),
+        "Death Incarnate Kazeros" => Some(777),
+        _ => None,
+    }
+}
+
+pub fn compute_wipe_bars(boss_name: &str, current_hp: i64, max_hp: i64) -> Option<i32> {
+    if max_hp <= 0 || current_hp <= 0 {
+        return None;
+    }
+    let total_bars = get_boss_hp_bars(boss_name, max_hp)?;
+    let bars = ((current_hp as f64 / max_hp as f64) * total_bars as f64).ceil() as i32;
+    Some(bars)
+}
+
 pub fn build_delete_encounters_query(ids_len: usize) -> String {
     let placeholders = std::iter::repeat_n("?", ids_len)
         .collect::<Vec<_>>()
@@ -98,6 +180,13 @@ pub fn prepare_get_encounter_preview_query(
         ""
     };
 
+    let local_player_filter = if !filter.local_player.is_empty() {
+        params.push(filter.local_player);
+        "AND e.local_player = ?"
+    } else {
+        ""
+    };
+
     let query = format!(
         "SELECT
     e.id,               -- 0
@@ -115,12 +204,15 @@ pub fn prepare_get_encounter_preview_query(
     le.support_brand,   -- 12
     le.support_identity,-- 13
     le.support_hyper,   -- 14
-    le.unbuffed_dps     -- 15
+    le.unbuffed_dps,    -- 15
+    be.current_hp AS boss_current_hp,  -- 16
+    be.max_hp AS boss_max_hp           -- 17
     FROM encounter_preview e
     LEFT JOIN entity le ON le.encounter_id = e.id AND le.name = e.local_player
+    LEFT JOIN entity be ON be.encounter_id = e.id AND be.name = e.current_boss AND be.entity_type = 'BOSS'
     {}
     WHERE e.duration > ? {}
-    {} {} {} {} {}
+    {} {} {} {} {} {}
     ORDER BY {} {}
     LIMIT ?
     OFFSET ?",
@@ -131,6 +223,7 @@ pub fn prepare_get_encounter_preview_query(
         difficulty_filter,
         raids_only_filter,
         boss_only_damage_filter,
+        local_player_filter,
         filter.sort,
         filter.order
     );
@@ -139,7 +232,7 @@ pub fn prepare_get_encounter_preview_query(
         "SELECT COUNT(*)
         FROM encounter_preview e {join_clause}
         WHERE duration > ? {boss_filter}
-        {raid_clear_filter} {raids_only_filter} {favorite_filter} {difficulty_filter} {boss_only_damage_filter}"
+        {raid_clear_filter} {raids_only_filter} {favorite_filter} {difficulty_filter} {boss_only_damage_filter} {local_player_filter}"
     );
 
     (params, query, count_query)
@@ -249,16 +342,30 @@ pub fn map_encounter_preview(row: &rusqlite::Row) -> rusqlite::Result<EncounterP
     let classes_str: String = row.get("players").unwrap_or_default();
     let (classes, names) = parse_class_names(classes_str);
 
+    let cleared: bool = row.get("cleared")?;
+    let boss_name: String = row.get("current_boss")?;
+
+    let wipe_bars = if !cleared {
+        let boss_current_hp: Option<i64> = row.get("boss_current_hp").unwrap_or_default();
+        let boss_max_hp: Option<i64> = row.get("boss_max_hp").unwrap_or_default();
+        match (boss_current_hp, boss_max_hp) {
+            (Some(current_hp), Some(max_hp)) => compute_wipe_bars(&boss_name, current_hp, max_hp),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     Ok(EncounterPreview {
         id: row.get("id")?,
         fight_start: row.get("fight_start")?,
-        boss_name: row.get("current_boss")?,
+        boss_name,
         duration: row.get("duration")?,
         classes,
         names,
         difficulty: row.get("difficulty")?,
         favorite: row.get("favorite")?,
-        cleared: row.get("cleared")?,
+        cleared,
         local_player: row.get("local_player")?,
         my_dps: row.get("my_dps").unwrap_or(0),
         spec: row.get("spec").unwrap_or_default(),
@@ -267,6 +374,7 @@ pub fn map_encounter_preview(row: &rusqlite::Row) -> rusqlite::Result<EncounterP
         support_identity: row.get("support_identity").unwrap_or_default(),
         support_hyper: row.get("support_hyper").unwrap_or_default(),
         udps: row.get("unbuffed_dps").unwrap_or_default(),
+        wipe_bars,
     })
 }
 

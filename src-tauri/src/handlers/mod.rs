@@ -55,6 +55,9 @@ pub fn generate_handlers() -> Box<dyn Fn(Invoke) -> bool + Send + Sync> {
         check_beta_update,
         install_beta_update,
         install_stable_update,
+        get_local_characters,
+        get_encounters_by_ids,
+        get_progression_stats,
     ])
 }
 
@@ -76,6 +79,30 @@ pub fn load_encounters_preview(
     let encounter = repository.get_encounter_preview(args)?;
 
     Ok(encounter)
+}
+
+#[command]
+pub fn get_local_characters(repository: State<Repository>) -> Result<Vec<CharacterInfo>> {
+    let characters = repository.get_local_characters()?;
+    Ok(characters)
+}
+
+#[command]
+pub fn get_encounters_by_ids(
+    repository: State<Repository>,
+    ids: Vec<i32>,
+) -> Result<Vec<EncounterPreview>> {
+    let encounters = repository.get_encounters_by_ids(&ids)?;
+    Ok(encounters)
+}
+
+#[command]
+pub fn get_progression_stats(
+    repository: State<Repository>,
+    ids: Vec<i32>,
+) -> Result<Vec<ProgressionEncounterStats>> {
+    let stats = repository.get_progression_stats(&ids)?;
+    Ok(stats)
 }
 
 #[command]

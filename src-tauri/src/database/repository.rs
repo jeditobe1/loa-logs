@@ -154,6 +154,164 @@ impl Repository {
         Ok(value)
     }
 
+    pub fn get_encounters_by_ids(&self, ids: &[i32]) -> Result<Vec<EncounterPreview>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let connection = self.0.get()?;
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let query = format!(
+            "SELECT
+            e.id,
+            e.fight_start,
+            e.current_boss,
+            e.duration,
+            e.difficulty,
+            e.favorite,
+            e.cleared,
+            e.local_player,
+            e.my_dps,
+            e.players,
+            le.spec,
+            le.support_ap,
+            le.support_brand,
+            le.support_identity,
+            le.support_hyper,
+            le.unbuffed_dps,
+            be.current_hp AS boss_current_hp,
+            be.max_hp AS boss_max_hp
+            FROM encounter_preview e
+            LEFT JOIN entity le ON le.encounter_id = e.id AND le.name = e.local_player
+            LEFT JOIN entity be ON be.encounter_id = e.id AND be.name = e.current_boss AND be.entity_type = 'BOSS'
+            WHERE e.id IN ({})
+            ORDER BY e.fight_start ASC",
+            placeholders.join(",")
+        );
+
+        let mut statement = connection.prepare(&query)?;
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
+        let rows = statement.query_map(rusqlite::params_from_iter(params), map_encounter_preview)?;
+        let encounters: Vec<EncounterPreview> = rows.collect::<Result<_, _>>()?;
+        Ok(encounters)
+    }
+
+    pub fn get_progression_stats(&self, ids: &[i32]) -> Result<Vec<ProgressionEncounterStats>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let connection = self.0.get()?;
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+
+        // Fetch player entities
+        let entity_query = format!(
+            "SELECT
+                e.encounter_id,
+                e.name,
+                e.class_id,
+                e.dps,
+                e.is_dead,
+                e.support_ap,
+                e.support_brand,
+                e.support_identity,
+                e.support_hyper,
+                e.unbuffed_dps
+            FROM entity e
+            WHERE e.encounter_id IN ({})
+                AND e.entity_type = 'PLAYER'
+                AND e.class_id > 0
+            ORDER BY e.encounter_id, e.dps DESC",
+            placeholders.join(",")
+        );
+
+        let mut statement = connection.prepare(&entity_query)?;
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
+        let rows = statement.query_map(rusqlite::params_from_iter(params), |row| {
+            std::result::Result::Ok((
+                row.get::<_, i32>(0)?,
+                ProgressionPlayerStats {
+                    name: row.get(1)?,
+                    class_id: row.get(2)?,
+                    dps: row.get(3)?,
+                    is_dead: row.get(4)?,
+                    support_ap: row.get(5)?,
+                    support_brand: row.get(6)?,
+                    support_identity: row.get(7)?,
+                    support_hyper: row.get(8)?,
+                    unbuffed_dps: row.get(9)?,
+                },
+            ))
+        })?;
+
+        let mut stats_map: hashbrown::HashMap<i32, ProgressionEncounterStats> = hashbrown::HashMap::new();
+        for row in rows {
+            let (encounter_id, player) = row?;
+            let entry = stats_map.entry(encounter_id).or_insert_with(|| ProgressionEncounterStats {
+                id: encounter_id,
+                total_dps: 0,
+                players: Vec::new(),
+                party_info: None,
+            });
+            entry.total_dps += player.dps;
+            entry.players.push(player);
+        }
+
+        // Fetch party_info from encounter misc JSON
+        let misc_query = format!(
+            "SELECT id, misc FROM encounter WHERE id IN ({})",
+            ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+        );
+        let mut misc_stmt = connection.prepare(&misc_query)?;
+        let misc_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
+        let misc_rows = misc_stmt.query_map(rusqlite::params_from_iter(misc_params), |row| {
+            let id: i32 = row.get(0)?;
+            let misc_str: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+            std::result::Result::Ok((id, misc_str))
+        })?;
+
+        for row in misc_rows {
+            let (id, misc_str) = row?;
+            if let Some(entry) = stats_map.get_mut(&id) {
+                if let std::result::Result::Ok(misc) = serde_json::from_str::<crate::models::EncounterMisc>(&misc_str) {
+                    entry.party_info = misc.party_info;
+                }
+            }
+        }
+
+        // Return in the order of the input IDs
+        let result: Vec<ProgressionEncounterStats> = ids
+            .iter()
+            .filter_map(|id| stats_map.remove(id))
+            .collect();
+
+        Ok(result)
+    }
+
+    pub fn get_local_characters(&self) -> Result<Vec<CharacterInfo>> {
+        let connection = self.0.get()?;
+        let mut statement = connection.prepare_cached(
+            "SELECT e.local_player, MAX(le.gear_score) as max_gs
+             FROM encounter_preview e
+             LEFT JOIN entity le ON le.encounter_id = e.id AND le.name = e.local_player
+             GROUP BY e.local_player
+             ORDER BY max_gs DESC",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            std::result::Result::Ok(CharacterInfo {
+                name: row.get(0)?,
+                max_gear_score: row.get::<_, Option<f32>>(1)?.unwrap_or(0.0),
+            })
+        })?;
+
+        let characters: Vec<CharacterInfo> = rows.collect::<Result<_, _>>()?;
+        Ok(characters)
+    }
+
     pub fn delete_all_uncleared_encounters(&self, keep_favorites: bool) -> Result<()> {
         let connection = self.0.get()?;
 
