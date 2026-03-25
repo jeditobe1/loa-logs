@@ -16,7 +16,7 @@
     isSupportSpec,
     timestampToMinutesAndSeconds
   } from "$lib/utils";
-  import Header from "../../Header.svelte";
+
 
   const SHORT_THRESHOLD = 15_000;
 
@@ -399,16 +399,71 @@
   ];
 </script>
 
+{#snippet badge(text: string)}
+  <p class="rounded-sm bg-neutral-700/80 px-2 py-0.5">{text}</p>
+{/snippet}
+
 <div>
-  <Header title="Progression">
-    <a
-      href="/logs"
-      class="bg-accent-500/70 hover:bg-accent-500/60 flex items-center gap-1 rounded-md px-2 py-1 text-sm"
-    >
-      <IconArrowLeft class="shrink-0" />
-      Back
-    </a>
-  </Header>
+  <div class="sticky top-0 z-20 bg-neutral-900/70 px-6 shadow-md drop-shadow-lg backdrop-blur-lg">
+    <div class="h-18 mx-auto flex max-w-[180rem] items-center">
+      <div class="flex flex-col px-1 py-4">
+        <div class="flex gap-2 overflow-x-auto text-nowrap py-1 text-xs">
+          <a
+            href="/logs"
+            class="bg-accent-500/70 hover:bg-accent-500/80 flex items-center gap-1 rounded-sm py-0.5 pl-1 pr-2"
+          >
+            <IconArrowLeft class="shrink-0" />
+            Back
+          </a>
+          {#if !loading && attempts.length > 0}
+            {#if difficulty}
+              <p
+                class="rounded-sm bg-neutral-700/80 px-2 py-0.5"
+                class:text-yellow-300={difficulty === "Hard"}
+                class:text-amber-600={difficulty === "Inferno" || difficulty === "Challenge" || difficulty === "Trial"}
+                class:text-cyan-400={difficulty === "Solo"}
+                class:text-purple-500={difficulty.includes("Extreme") || difficulty === "The First"}
+              >
+                {difficulty}
+              </p>
+            {/if}
+            {@render badge(`${attempts.length} attempts`)}
+            {@render badge(`Total: ${timestampToMinutesAndSeconds(totalTime)}`)}
+            {#if hasClear}
+              <p class="rounded-sm bg-lime-900/50 px-2 py-0.5 text-lime-400">Cleared</p>
+            {:else}
+              <p class="rounded-sm bg-red-900/50 px-2 py-0.5 text-red-300">In Progress</p>
+            {/if}
+            {@render badge(`Best: ${abbreviateNumber(bestDps)} DPS`)}
+            {@render badge(`Avg: ${abbreviateNumber(avgDps)} DPS`)}
+            <label class="flex items-center gap-1.5 rounded-sm bg-neutral-700/80 px-2 py-0.5">
+              <input
+                type="checkbox"
+                bind:checked={hideShort}
+                class="form-checkbox size-3.5 rounded-sm border-0 bg-neutral-600 checked:text-accent-600/80 focus:ring-0"
+              />
+              Hide short
+              {#if hiddenCount > 0}
+                <span class="text-neutral-400">({hiddenCount})</span>
+              {/if}
+            </label>
+          {/if}
+        </div>
+        {#if !loading && attempts.length > 0}
+          <div class="mt-1">
+            <h1 class="text-xl font-semibold tracking-tight">
+              <span class:text-lime-400={hasClear}>Progression:</span>
+              {gateName}
+            </h1>
+          </div>
+        {:else}
+          <div class="mt-1">
+            <h1 class="text-xl font-semibold tracking-tight">Progression</h1>
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
 
   <div class="mx-auto max-w-[180rem] px-6 py-4">
     {#if loading}
@@ -416,41 +471,6 @@
     {:else if allAttempts.length === 0}
       <p class="text-neutral-400">No attempts found.</p>
     {:else}
-      <!-- Summary Header -->
-      <div class="mb-4 flex flex-wrap items-center gap-3">
-        <h2 class="text-xl font-semibold">{gateName}</h2>
-        {#if difficulty}
-          <span
-            class="rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs"
-            class:text-yellow-300={difficulty === "Hard"}
-            class:text-amber-600={difficulty === "Inferno" || difficulty === "Challenge" || difficulty === "Trial"}
-            class:text-cyan-400={difficulty === "Solo"}
-            class:text-purple-500={difficulty.includes("Extreme") || difficulty === "The First"}
-          >
-            {difficulty}
-          </span>
-        {/if}
-        <span class="rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs">{attempts.length} attempts</span>
-        <span class="rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs">Total: {timestampToMinutesAndSeconds(totalTime)}</span>
-        {#if hasClear}
-          <span class="rounded-sm bg-lime-900/50 px-2 py-0.5 text-xs text-lime-400">Cleared</span>
-        {:else}
-          <span class="rounded-sm bg-red-900/50 px-2 py-0.5 text-xs text-red-300">In Progress</span>
-        {/if}
-        <span class="rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs">Best: {abbreviateNumber(bestDps)} DPS</span>
-        <span class="rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs">Avg: {abbreviateNumber(avgDps)} DPS</span>
-        <label class="flex items-center gap-1.5 rounded-sm bg-neutral-700/80 px-2 py-0.5 text-xs">
-          <input
-            type="checkbox"
-            bind:checked={hideShort}
-            class="form-checkbox size-3.5 rounded-sm border-0 bg-neutral-600 checked:text-accent-600/80 focus:ring-0"
-          />
-          Hide short attempts
-          {#if hiddenCount > 0}
-            <span class="text-neutral-400">({hiddenCount} hidden)</span>
-          {/if}
-        </label>
-      </div>
 
       <!-- View Mode Tabs -->
       <div class="mb-4 flex gap-1">
