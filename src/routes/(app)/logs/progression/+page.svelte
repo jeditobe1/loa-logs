@@ -10,9 +10,11 @@
   import { raidGates } from "$lib/constants/encounters";
   import { IconArrowLeft } from "$lib/icons";
   import type { EncounterPreview } from "$lib/types";
+  import QuickTooltip from "$lib/components/QuickTooltip.svelte";
   import {
     abbreviateNumber,
     formatTimestamp,
+    getClassIcon,
     isSupportSpec,
     timestampToMinutesAndSeconds
   } from "$lib/utils";
@@ -117,6 +119,30 @@
   });
 
   let hasPartyInfo = $derived(myPartyNames.size > 0);
+
+  // Party members with class IDs and a link to their most recent attempt in this group
+  let partyMembers = $derived.by((): { name: string; classId: number; latestId: number }[] => {
+    // Collect classId per player name from all stats (first seen wins)
+    const classById = new Map<string, number>();
+    for (const s of statsInOrder) {
+      if (!s) continue;
+      for (const p of s.players) {
+        if (!classById.has(p.name)) classById.set(p.name, p.classId);
+      }
+    }
+    // Collect most recent attempt id per player (statsInOrder is oldest-first, so last wins)
+    const latestAttempt = new Map<string, number>();
+    for (let i = 0; i < statsInOrder.length; i++) {
+      const s = statsInOrder[i];
+      const a = attempts[i];
+      if (!s || !a) continue;
+      for (const p of s.players) latestAttempt.set(p.name, a.id);
+    }
+    const names = hasPartyInfo ? [...myPartyNames] : [...classById.keys()];
+    return names
+      .filter((n) => classById.has(n))
+      .map((n) => ({ name: n, classId: classById.get(n)!, latestId: latestAttempt.get(n) ?? attempts[0]?.id ?? 0 }));
+  });
 
   // Helper: get my party's players from a stats entry
   function getMyPartyPlayers(s: ProgressionEncounterStats): ProgressionPlayerStats[] {
@@ -486,6 +512,24 @@
   <p class="rounded-sm bg-neutral-700/80 px-2 py-0.5">{text}</p>
 {/snippet}
 
+{#snippet partyCard()}
+  {#if partyMembers.length > 0}
+    <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-4">
+      <h3 class="mb-3 text-sm font-medium text-neutral-400">Party</h3>
+      <div class="flex flex-col gap-2">
+        {#each partyMembers as member}
+          <a href="/logs/{member.latestId}" class="hover:text-accent-500 flex items-center gap-2">
+            <QuickTooltip tooltip={member.name} class="shrink-0">
+              <img src={getClassIcon(member.classId)} alt="class-{member.classId}" class="size-8" />
+            </QuickTooltip>
+            <span class="text-sm" class:text-accent-400={member.name === localPlayer}>{member.name}</span>
+          </a>
+        {/each}
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 <div>
   <div class="sticky top-0 z-20 bg-neutral-900/70 px-6 shadow-md drop-shadow-lg backdrop-blur-lg">
     <div class="h-18 mx-auto flex max-w-[180rem] items-center">
@@ -608,6 +652,7 @@
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
           {/if}
+          {@render partyCard()}
         {/if}
 
         {#if viewMode === "dps"}
@@ -686,6 +731,7 @@
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
           {/if}
+          {@render partyCard()}
         {/if}
       </div>
 
