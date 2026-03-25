@@ -6,6 +6,7 @@ import type {
   Encounter,
   EncounterDbInfo,
   EncounterEvent,
+  EncounterPreview,
   EncountersOverview,
   IdentityEvent,
   PartyEvent,
@@ -84,11 +85,44 @@ interface LoadEncountersCriteria {
     sort?: string;
     order?: "asc" | "desc";
     raidsOnly?: boolean;
+    localPlayer?: string;
   };
 }
 
 export const loadEncountersPreview = (criteria: LoadEncountersCriteria): Promise<EncountersOverview> =>
   invoke("load_encounters_preview", { ...criteria });
+
+export interface CharacterInfo {
+  name: string;
+  maxGearScore: number;
+}
+
+export const getLocalCharacters = (): Promise<CharacterInfo[]> => invoke("get_local_characters");
+
+export const getEncountersByIds = (ids: number[]): Promise<EncounterPreview[]> =>
+  invoke("get_encounters_by_ids", { ids });
+
+export interface ProgressionPlayerStats {
+  name: string;
+  classId: number;
+  dps: number;
+  isDead: boolean;
+  supportAp: number | null;
+  supportBrand: number | null;
+  supportIdentity: number | null;
+  supportHyper: number | null;
+  unbuffedDps: number | null;
+}
+
+export interface ProgressionEncounterStats {
+  id: number;
+  totalDps: number;
+  players: ProgressionPlayerStats[];
+  partyInfo?: Record<number, string[]>;
+}
+
+export const getProgressionStats = (ids: number[]): Promise<ProgressionEncounterStats[]> =>
+  invoke("get_progression_stats", { ids });
 
 export interface SyncArgs {
   encounter: number;

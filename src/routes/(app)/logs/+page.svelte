@@ -11,12 +11,18 @@
   import Pages from "./Pages.svelte";
   import Search from "./Search.svelte";
   import { loadEncountersPreview } from "$lib/api";
+  import { groupEncounters, trimIncompleteGroups, type EncounterGroup } from "./groupEncounters";
 
   let overview: EncountersOverview | null = $state(null);
+  let groups: EncounterGroup[] = $state([]);
   let container = $state<HTMLDivElement | null>(null);
 
   let selectMode = $state(false);
   let selected = $state(new SvelteSet<number>());
+
+  let collapseActive = $derived(
+    settings.app.general.experimentalFeatures && settings.app.general.collapseEncounters
+  );
 
   async function loadEncounters() {
     // start or space (^|\s) + word (\w+) + colon or space or end (:|\s|$)
@@ -36,9 +42,13 @@
       }
     }
 
+    const pageSize = settings.app.general.logsPerPage;
+    // Over-fetch when collapsing to avoid splitting groups at page boundaries
+    const fetchSize = collapseActive ? pageSize * 3 : pageSize;
+
     const criteria = {
       page: encounterFilter.page,
-      pageSize: settings.app.general.logsPerPage,
+      pageSize: fetchSize,
       search: searchQuery,
       filter: {
         minDuration: encounterFilter.minDuration,
@@ -48,7 +58,8 @@
         difficulty: encounterFilter.difficulty,
         sort: encounterFilter.sort,
         order: encounterFilter.order,
-        raidsOnly: settings.app.general.showRaidsOnly
+        raidsOnly: settings.app.general.showRaidsOnly,
+        localPlayer: encounterFilter.localPlayer
       }
     };
 
@@ -60,7 +71,18 @@
   $effect.pre(() => {
     refresh;
     (async () => {
-      overview = await loadEncounters();
+      const result = await loadEncounters();
+
+      if (collapseActive) {
+        const rawGroups = groupEncounters(result.encounters);
+        const pageSize = settings.app.general.logsPerPage;
+        const { groups: trimmed } = trimIncompleteGroups(rawGroups, pageSize, result.encounters.length);
+        groups = trimmed;
+      } else {
+        groups = [];
+      }
+
+      overview = result;
       if (container) {
         container.scrollTop = 0;
       }
@@ -79,6 +101,7 @@
     encounterFilter.difficulty;
     encounterFilter.sort;
     encounterFilter.order;
+    encounterFilter.localPlayer;
 
     // *searching* is true when its not the first load
     const searching = untrack(() => once);
@@ -110,7 +133,7 @@
         bind:this={container}
       >
         {#if overview}
-          <EncountersTable {overview} {selectMode} bind:selected />
+          <EncountersTable {overview} {selectMode} bind:selected {groups} collapsed={collapseActive} />
         {/if}
       </div>
       {#if !overview || overview?.encounters.length === 0}

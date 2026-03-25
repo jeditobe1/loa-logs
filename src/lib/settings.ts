@@ -68,6 +68,8 @@ export interface GeneralSettings {
   startOnBoot: boolean;
   logsPerPage: number;
   experimentalFeatures: boolean;
+  minCharacterIlevel: number;
+  collapseEncounters: boolean;
   mini: boolean;
   miniEdit: boolean;
   autoShow: boolean;
