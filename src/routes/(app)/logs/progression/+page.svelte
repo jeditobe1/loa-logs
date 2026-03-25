@@ -50,6 +50,7 @@
 
   // Summary
   let gateName = $derived(attempts.length > 0 ? raidGates[attempts[0].bossName] || attempts[0].bossName : "");
+  let localPlayer = $derived(attempts.length > 0 ? attempts[0].localPlayer : "");
   let difficulty = $derived(attempts.length > 0 ? attempts[0].difficulty || "" : "");
   let totalTime = $derived(attempts.reduce((sum, a) => sum + a.duration, 0));
   let hasClear = $derived(attempts.some((a) => a.cleared));
@@ -102,7 +103,6 @@
   // Determine local player's party members from party_info
   let myPartyNames = $derived.by((): Set<string> => {
     if (attempts.length === 0 || stats.length === 0) return new Set();
-    const localPlayer = attempts[0].localPlayer;
     // Find the first encounter with party_info
     for (const s of stats) {
       if (!s.partyInfo) continue;
@@ -544,6 +544,7 @@
             <h1 class="text-xl font-semibold tracking-tight">
               <span class:text-lime-400={hasClear}>Progression:</span>
               {gateName}
+              <span class="text-sm font-normal text-neutral-400">— {localPlayer}</span>
             </h1>
           </div>
         {:else}
