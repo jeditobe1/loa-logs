@@ -85,6 +85,13 @@ pub struct ProgressionEncounterStats {
     /// party index -> list of player names (from encounter misc)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub party_info: Option<HashMap<i32, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<Vec<crate::models::BossPhase>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wipe_phase: Option<u32>,
+    /// Boss HP remaining (0.0–1.0) at the end of the last phase. Use with wipe_phase to compare progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wipe_phase_end_hp: Option<f32>,
 }
 
 #[derive(Default, Debug, Serialize)]

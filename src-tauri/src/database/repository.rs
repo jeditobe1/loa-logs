@@ -254,14 +254,17 @@ impl Repository {
                 total_dps: 0,
                 players: Vec::new(),
                 party_info: None,
+                phases: None,
+                wipe_phase: None,
+                wipe_phase_end_hp: None,
             });
             entry.total_dps += player.dps;
             entry.players.push(player);
         }
 
-        // Fetch party_info from encounter misc JSON
+        // Fetch misc + boss_hp_log for party_info and JIT phase detection
         let misc_query = format!(
-            "SELECT id, misc FROM encounter WHERE id IN ({})",
+            "SELECT id, misc, boss_hp_log FROM encounter WHERE id IN ({})",
             ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
         );
         let mut misc_stmt = connection.prepare(&misc_query)?;
@@ -270,16 +273,59 @@ impl Repository {
         let misc_rows = misc_stmt.query_map(rusqlite::params_from_iter(misc_params), |row| {
             let id: i32 = row.get(0)?;
             let misc_str: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
-            std::result::Result::Ok((id, misc_str))
+            let boss_hp_log_blob: Option<Vec<u8>> = row.get(2)?;
+            std::result::Result::Ok((id, misc_str, boss_hp_log_blob))
         })?;
 
         for row in misc_rows {
-            let (id, misc_str) = row?;
-            if let Some(entry) = stats_map.get_mut(&id) {
-                if let std::result::Result::Ok(misc) = serde_json::from_str::<crate::models::EncounterMisc>(&misc_str) {
-                    entry.party_info = misc.party_info;
+            let (id, misc_str, boss_hp_log_blob) = row?;
+            let Some(entry) = stats_map.get_mut(&id) else { continue };
+
+            let misc = serde_json::from_str::<crate::models::EncounterMisc>(&misc_str).ok();
+
+            if let Some(ref m) = misc {
+                entry.party_info = m.party_info.clone();
+            }
+
+            // Use pre-computed phases if available, otherwise JIT compute
+            let phases = misc.as_ref().and_then(|m| m.phases.clone()).or_else(|| {
+                use crate::database::phase_detection::detect_phases;
+                use crate::models::encounter::BossHpLog;
+
+                let boss_hp_log: hashbrown::HashMap<String, Vec<BossHpLog>> =
+                    if let Some(blob) = boss_hp_log_blob {
+                        // v1.13.5+ — decompress from BLOB
+                        use std::io::Read;
+                        let mut decoder = flate2::read::GzDecoder::new(blob.as_slice());
+                        let mut buf = Vec::new();
+                        if decoder.read_to_end(&mut buf).is_ok() {
+                            serde_json::from_slice(&buf).unwrap_or_default()
+                        } else {
+                            Default::default()
+                        }
+                    } else {
+                        // Older format — from misc JSON
+                        misc.as_ref()
+                            .and_then(|m| m.boss_hp_log.clone())
+                            .unwrap_or_default()
+                    };
+
+                let intermission_start = misc.as_ref().and_then(|m| m.intermission_start);
+                let intermission_end = misc.as_ref().and_then(|m| m.intermission_end);
+                let detected = detect_phases(&boss_hp_log, intermission_start, intermission_end);
+                if detected.is_empty() { None } else { Some(detected) }
+            });
+
+            if let Some(ref phases) = phases {
+                let combat_phases: Vec<_> = phases.iter()
+                    .filter(|p| p.phase_type != crate::models::encounter::PhaseType::Intermission)
+                    .collect();
+                if let Some(last) = combat_phases.last() {
+                    entry.wipe_phase = Some(last.phase_number);
+                    entry.wipe_phase_end_hp = Some(last.end_hp_percent);
                 }
             }
+            entry.phases = phases;
         }
 
         // Return in the order of the input IDs
@@ -450,6 +496,12 @@ impl Repository {
         let mut stats = encounter.encounter_damage_stats.clone();
         stats.dps = stats.total_damage_dealt / duration_seconds;
 
+        let phases = {
+            use crate::database::phase_detection::detect_phases;
+            let detected = detect_phases(boss_hp_log, *intermission_start, *intermission_end);
+            if detected.is_empty() { None } else { Some(detected) }
+        };
+
         let misc = EncounterMisc {
             raid_clear: (*raid_clear).then_some(true),
             party_info: if party_info.is_empty() {
@@ -475,6 +527,7 @@ impl Repository {
             manual_save: Some(args.manual),
             intermission_start: *intermission_start,
             intermission_end: *intermission_end,
+            phases,
             ..Default::default()
         };
 
@@ -814,6 +867,7 @@ mod tests {
             sort: "id".to_string(),
             order: "desc".to_string(),
             raids_only: true,
+            local_player: String::new(),
         };
 
         let paged = repository
@@ -1698,6 +1752,7 @@ mod tests {
                 manual_save: None,
                 intermission_start: None,
                 intermission_end: None,
+                phases: None,
             };
 
             let encounter_damage_stats = EncounterDamageStats {

@@ -114,11 +114,26 @@ export interface ProgressionPlayerStats {
   unbuffedDps: number | null;
 }
 
+export interface BossPhase {
+  phaseNumber: number;
+  phaseType: "normal" | "transformation" | "encore" | "intermission";
+  bossName: string;
+  startTime: number;
+  endTime: number;
+  startHpPercent: number;
+  endHpPercent: number;
+  totalBars: number | null;
+}
+
 export interface ProgressionEncounterStats {
   id: number;
   totalDps: number;
   players: ProgressionPlayerStats[];
   partyInfo?: Record<number, string[]>;
+  phases?: BossPhase[];
+  wipePhase?: number;
+  /** Boss HP remaining (0.0–1.0) at the end of the last phase. Combine with wipePhase for cross-attempt comparison. */
+  wipePhaseEndHp?: number;
 }
 
 export const getProgressionStats = (ids: number[]): Promise<ProgressionEncounterStats[]> =>

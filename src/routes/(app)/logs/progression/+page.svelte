@@ -45,6 +45,9 @@
   });
   let hiddenCount = $derived(allAttempts.length - attempts.length);
 
+  // stats ordered to match attempts (backend may return in different order)
+  let statsInOrder = $derived(attempts.map((a) => stats.find((s) => s.id === a.id)));
+
   // Summary
   let gateName = $derived(attempts.length > 0 ? raidGates[attempts[0].bossName] || attempts[0].bossName : "");
   let difficulty = $derived(attempts.length > 0 ? attempts[0].difficulty || "" : "");
@@ -56,6 +59,45 @@
     attempts.length > 0 ? Math.round(attempts.reduce((sum, a) => sum + a.myDps, 0) / attempts.length) : 0
   );
   let hasWipeBars = $derived(attempts.some((a) => a.wipeBars));
+  let hasPhases = $derived(stats.some((s) => s.phases && s.phases.filter((p) => p.phaseType !== "intermission").length > 1));
+  let hasWipeData = $derived(stats.some((s) => s.wipePhase != null && s.wipePhaseEndHp != null));
+
+  // Total phases across all attempts — used to normalize progress scores for cross-phase comparison.
+  // A P1 wipe only has 1 phase in its data, so we use the max seen across all attempts.
+  let totalPhases = $derived.by(() => {
+    let max = 1;
+    for (const s of stats) {
+      const combat = (s.phases ?? []).filter((p) => p.phaseType !== "intermission");
+      if (combat.length > max) max = combat.length;
+      if (s.wipePhase && s.wipePhase > max) max = s.wipePhase;
+    }
+    return max;
+  });
+
+  // Comparable 0–1 progress value. Phase number takes precedence; end HP breaks ties within a phase.
+  // P1 @ 6% HP remaining  = (0 + 0.94) / 2 = 0.47
+  // P2 @ 30% HP remaining = (1 + 0.70) / 2 = 0.85
+  function normalizedProgress(s: ProgressionEncounterStats, cleared: boolean): number | null {
+    if (cleared) return 1.0;
+    if (s.wipePhase == null || s.wipePhaseEndHp == null) return null;
+    return ((s.wipePhase - 1) + (1 - s.wipePhaseEndHp)) / totalPhases;
+  }
+
+  // "Best Progress" for the header badge: find the attempt with highest normalized score
+  let bestProgressAttempt = $derived.by((): { phase: number; endHp: number } | null => {
+    let best: { score: number; phase: number; endHp: number } | null = null;
+    for (let i = 0; i < statsInOrder.length; i++) {
+      const s = statsInOrder[i];
+      if (!s) continue;
+      const cleared = attempts[i]?.cleared ?? false;
+      if (cleared) return { phase: totalPhases, endHp: 0 };
+      const score = normalizedProgress(s, false);
+      if (score != null && (best == null || score > best.score)) {
+        best = { score, phase: s.wipePhase!, endHp: s.wipePhaseEndHp! };
+      }
+    }
+    return best ? { phase: best.phase, endHp: best.endHp } : null;
+  });
 
   // Determine local player's party members from party_info
   let myPartyNames = $derived.by((): Set<string> => {
@@ -180,12 +222,51 @@
 
   let barsChart: EChartsOptions = $derived.by(() => {
     if (!hasWipeBars || attempts.length === 0) return {};
+    const statsById = new Map(stats.map((s) => [s.id, s]));
+    const tooltipFormatter = hasPhases
+      ? (params: any[]) => {
+          const p = params[0];
+          const a = attempts[p.dataIndex];
+          const s = a ? statsById.get(a.id) : undefined;
+          const phaseLabel = s?.wipePhase ? ` (P${s.wipePhase})` : "";
+          return `#${p.dataIndex + 1}${a?.cleared ? " (Clear)" : ""}<br/>Bars: ${p.value ?? "—"}${phaseLabel}`;
+        }
+      : undefined;
     const chart = makeLineChart(
       "Bars Remaining at Wipe",
       attempts.map((a) => (a.cleared ? 0 : a.wipeBars ?? null)),
-      "#ef4444"
+      "#ef4444",
+      { tooltipFormatter }
     );
     return { ...chart, yAxis: { ...(chart.yAxis as object), inverse: true } };
+  });
+
+  let progressChart: EChartsOptions = $derived.by(() => {
+    if (!hasWipeData || attempts.length === 0) return {};
+    return makeLineChart(
+      "Progress",
+      statsInOrder.map((s, i) => {
+        const cleared = attempts[i]?.cleared ?? false;
+        const score = s ? normalizedProgress(s, cleared) : null;
+        return score != null ? +(score * 100).toFixed(1) : null;
+      }),
+      "#22c55e",
+      {
+        yFormatter: (v) => `${v}%`,
+        markMinMax: true,
+        tooltipFormatter: (params) => {
+          const p = params[0];
+          const s = statsInOrder[p.dataIndex];
+          const cleared = attempts[p.dataIndex]?.cleared ?? false;
+          if (cleared) return `#${p.dataIndex + 1} (Clear)<br/>Progress: 100%`;
+          const phaseLabel = s?.wipePhase ? `P${s.wipePhase}` : "";
+          const withinPhase = s?.wipePhaseEndHp != null
+            ? ` · ${((1 - s.wipePhaseEndHp) * 100).toFixed(1)}% depleted`
+            : "";
+          return `#${p.dataIndex + 1}<br/>${phaseLabel}${withinPhase}<br/>Overall: ${p.value}%`;
+        }
+      }
+    );
   });
 
   // ──────────────────── My DPS charts ────────────────────
@@ -255,8 +336,9 @@
 
   // Support DPS contribution: total party DPS minus sum of unbuffed DPS for my party
   let supportContribChart: EChartsOptions = $derived.by(() => {
-    if (stats.length === 0) return {};
-    const contribData = stats.map((s) => {
+    if (statsInOrder.length === 0) return {};
+    const contribData = statsInOrder.map((s) => {
+      if (!s) return 0;
       const partyPlayers = getMyPartyPlayers(s);
       const totalPartyDps = partyPlayers.reduce((sum, p) => sum + p.dps, 0);
       const totalUnbuffed = partyPlayers.reduce((sum, p) => sum + (p.unbuffedDps ?? p.dps), 0);
@@ -268,7 +350,7 @@
       areaColor: "rgba(167, 139, 250, 0.15)",
       tooltipFormatter: (params) => {
         const p = params[0];
-        const s = stats[p.dataIndex];
+        const s = statsInOrder[p.dataIndex];
         const partyDps = s ? getMyPartyPlayers(s).reduce((sum, pl) => sum + pl.dps, 0) : 0;
         return `#${p.dataIndex + 1}<br/>Contribution: ${abbreviateNumber(p.value)}<br/>Party DPS: ${abbreviateNumber(partyDps)}`;
       }
@@ -278,13 +360,13 @@
   // ──────────────────── Raid charts ────────────────────
 
   let raidDpsChart: EChartsOptions = $derived.by(() => {
-    if (stats.length === 0) return {};
-    return makeLineChart("Total Raid DPS", stats.map((s) => s.totalDps), "#8b5cf6", {
+    if (statsInOrder.length === 0) return {};
+    return makeLineChart("Total Raid DPS", statsInOrder.map((s) => s?.totalDps ?? null), "#8b5cf6", {
       yFormatter: (v) => abbreviateNumber(v),
       markMinMax: true,
       tooltipFormatter: (params) => {
         const p = params[0];
-        const s = stats[p.dataIndex];
+        const s = statsInOrder[p.dataIndex];
         const a = attempts[p.dataIndex];
         let lines = `#${p.dataIndex + 1}${a?.cleared ? " (Clear)" : ""}<br/>Total: ${abbreviateNumber(p.value)}`;
         if (s) {
@@ -298,8 +380,8 @@
   });
 
   let raidDeathsChart: EChartsOptions = $derived.by(() => {
-    if (stats.length === 0) return {};
-    const deathData = stats.map((s) => s.players.filter((p) => p.isDead).length);
+    if (statsInOrder.length === 0) return {};
+    const deathData = statsInOrder.map((s) => s?.players.filter((p) => p.isDead).length ?? 0);
     if (deathData.every((d) => d === 0)) return {};
     return {
       ...defaultOptions,
@@ -308,7 +390,7 @@
         trigger: "axis",
         formatter: (params: { dataIndex: number; value: number }[]) => {
           const p = params[0];
-          const s = stats[p.dataIndex];
+          const s = statsInOrder[p.dataIndex];
           let lines = `#${p.dataIndex + 1} — ${p.value} death${p.value !== 1 ? "s" : ""}`;
           if (s) {
             for (const player of s.players.filter((pl) => pl.isDead)) {
@@ -320,7 +402,7 @@
       },
       xAxis: {
         type: "category",
-        data: stats.map((_, i) => `#${i + 1}`),
+        data: statsInOrder.map((_, i) => `#${i + 1}`),
         axisLabel: { color: "#a3a3a3" }
       },
       yAxis: { type: "value", minInterval: 1, axisLabel: { color: "#a3a3a3" } },
@@ -340,11 +422,12 @@
 
   // Raid: per-player DPS stacked area
   let raidPlayerDpsChart: EChartsOptions = $derived.by(() => {
-    if (stats.length === 0) return {};
+    if (statsInOrder.length === 0) return {};
     // Get all unique player names across attempts, in consistent order
     const allNames: string[] = [];
     const seen = new Set<string>();
-    for (const s of stats) {
+    for (const s of statsInOrder) {
+      if (!s) continue;
       for (const p of s.players) {
         if (!seen.has(p.name)) {
           seen.add(p.name);
@@ -364,7 +447,7 @@
       tooltip: { trigger: "axis" },
       xAxis: {
         type: "category",
-        data: stats.map((_, i) => `#${i + 1}`),
+        data: statsInOrder.map((_, i) => `#${i + 1}`),
         axisLabel: { color: "#a3a3a3" }
       },
       yAxis: {
@@ -377,8 +460,8 @@
         stack: "total",
         areaStyle: {},
         emphasis: { focus: "series" as const },
-        data: stats.map((s) => {
-          const player = s.players.find((p) => p.name === name);
+        data: statsInOrder.map((s) => {
+          const player = s?.players.find((p) => p.name === name);
           return player ? player.dps : 0;
         }),
         lineStyle: { color: colors[idx % colors.length], width: 1 },
@@ -435,6 +518,13 @@
               <p class="rounded-sm bg-red-900/50 px-2 py-0.5 text-red-300">In Progress</p>
             {/if}
             {@render badge(`Best: ${abbreviateNumber(bestDps)} DPS`)}
+            {#if bestProgressAttempt != null}
+              {#if hasClear}
+                {@render badge(`Best: Clear`)}
+              {:else}
+                {@render badge(`Best: P${bestProgressAttempt.phase} · ${((1 - bestProgressAttempt.endHp) * 100).toFixed(1)}%`)}
+              {/if}
+            {/if}
             {@render badge(`Avg: ${abbreviateNumber(avgDps)} DPS`)}
             <label class="flex items-center gap-1.5 rounded-sm bg-neutral-700/80 px-2 py-0.5">
               <input
@@ -508,7 +598,11 @@
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
             <div class="h-64" use:chartable={durationChart}></div>
           </div>
-          {#if hasWipeBars && Object.keys(barsChart).length > 0}
+          {#if hasWipeData && Object.keys(progressChart).length > 0}
+            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
+              <div class="h-64" use:chartable={progressChart}></div>
+            </div>
+          {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
@@ -527,7 +621,11 @@
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
             <div class="h-64" use:chartable={durationChart}></div>
           </div>
-          {#if hasWipeBars && Object.keys(barsChart).length > 0}
+          {#if hasWipeData && Object.keys(progressChart).length > 0}
+            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
+              <div class="h-64" use:chartable={progressChart}></div>
+            </div>
+          {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
@@ -548,7 +646,11 @@
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
             <div class="h-64" use:chartable={durationChart}></div>
           </div>
-          {#if hasWipeBars && Object.keys(barsChart).length > 0}
+          {#if hasWipeData && Object.keys(progressChart).length > 0}
+            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
+              <div class="h-64" use:chartable={progressChart}></div>
+            </div>
+          {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
@@ -574,7 +676,11 @@
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
             <div class="h-64" use:chartable={durationChart}></div>
           </div>
-          {#if hasWipeBars && Object.keys(barsChart).length > 0}
+          {#if hasWipeData && Object.keys(progressChart).length > 0}
+            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
+              <div class="h-64" use:chartable={progressChart}></div>
+            </div>
+          {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
               <div class="h-64" use:chartable={barsChart}></div>
             </div>
@@ -602,7 +708,7 @@
               {/if}
               <th class="px-3 py-2 text-right">Duration</th>
               {#if hasWipeBars}
-                <th class="px-3 py-2 text-right">Bars</th>
+                <th class="px-3 py-2 text-right">{hasPhases ? "Progress" : "Bars"}</th>
               {/if}
               <th class="px-3 py-2 text-right">Result</th>
               <th class="px-3 py-2 text-right">Date</th>
@@ -641,9 +747,14 @@
                 {/if}
                 <td class="px-3 py-2 text-right">{timestampToMinutesAndSeconds(attempt.duration)}</td>
                 {#if hasWipeBars}
+                  {@const s = stats.find((st) => st.id === attempt.id)}
                   <td class="px-3 py-2 text-right">
                     {#if attempt.cleared}
                       <span class="text-lime-400">Clear</span>
+                    {:else if s?.wipePhase != null && s.wipePhaseEndHp != null}
+                      <span class="text-red-300">
+                        {#if hasPhases}P{s.wipePhase} · {/if}{((1 - s.wipePhaseEndHp) * 100).toFixed(1)}%
+                      </span>
                     {:else if attempt.wipeBars}
                       <span class="text-red-300">{attempt.wipeBars}x</span>
                     {:else}

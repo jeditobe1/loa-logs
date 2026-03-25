@@ -1,5 +1,6 @@
 pub mod migrator;
 pub mod models;
+pub mod phase_detection;
 mod queries;
 pub mod repository;
 mod sql_types;

@@ -244,6 +244,36 @@ pub struct EncounterMisc {
     pub intermission_start: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intermission_end: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<Vec<BossPhase>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseType {
+    Normal,
+    Transformation,
+    Encore,
+    Intermission,
+}
+
+impl Default for PhaseType {
+    fn default() -> Self {
+        PhaseType::Normal
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BossPhase {
+    pub phase_number: u32,
+    pub phase_type: PhaseType,
+    pub boss_name: String,
+    pub start_time: i32,
+    pub end_time: i32,
+    pub start_hp_percent: f32,
+    pub end_hp_percent: f32,
+    pub total_bars: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
