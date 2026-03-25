@@ -150,14 +150,16 @@
     }
   ];
 
-  let before = $state(settings.app.general.autoIface);
-  let beforePort = $state(settings.app.general.port);
-  let networkChanged = $derived(before !== settings.app.general.autoIface || beforePort !== settings.app.general.port);
+  let initialAutoIface = settings.app.general.autoIface;
+  let initialPort = settings.app.general.port;
   let networkNotification = $state(false);
 
   $effect(() => {
-    if (networkChanged) {
+    const autoIfaceChanged = settings.app.general.autoIface !== initialAutoIface;
+    const portChanged = settings.app.general.port !== initialPort;
+    if (autoIfaceChanged || portChanged) {
       if (!networkNotification) {
+        networkNotification = true;
         addToast(networkSettingsChanged);
         setTimeout(() => {
           networkNotification = false;
