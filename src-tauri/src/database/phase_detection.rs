@@ -29,10 +29,26 @@ pub fn detect_phases(
         .collect();
     boss_entries.sort_by_key(|(_, log)| log[0].time);
 
-    let is_multi_boss = boss_entries.len() > 1;
+    // Filter out concurrent minions: if a new boss starts before the previous accepted
+    // boss has ended, they are overlapping (minion spawned alongside the main boss).
+    // True phase changes are sequential — the new boss starts after the old one ends.
+    let mut accepted_bosses: Vec<(&String, &Vec<BossHpLog>)> = Vec::new();
+    let mut primary_end_time: i32 = i32::MIN;
+    for (name, log) in &boss_entries {
+        let start = log[0].time;
+        let end = log[log.len() - 1].time;
+        if start < primary_end_time {
+            // Overlaps with the active primary boss — treat as a minion, skip
+            continue;
+        }
+        accepted_bosses.push((name, log));
+        primary_end_time = end;
+    }
+
+    let is_multi_boss = accepted_bosses.len() > 1;
     let mut all_phases: Vec<BossPhase> = Vec::new();
 
-    for (boss_name, log) in &boss_entries {
+    for (boss_name, log) in &accepted_bosses {
         let phase_type = if is_multi_boss && !all_phases.is_empty() {
             PhaseType::Transformation
         } else {
@@ -341,6 +357,26 @@ mod tests {
         // Phase 2: 100/200 weight, 50% depleted = 0.25
         // Total: 0.75
         assert!((score - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn concurrent_minion_ignored() {
+        // Boss A runs 0..50; Minion spawns at t=20 (overlaps with boss A) and ends at t=40
+        // Expected: only 1 phase (Boss A), minion is not a phase change
+        let mut boss_hp_log = HashMap::new();
+        boss_hp_log.insert(
+            "Boss A".to_string(),
+            make_log(vec![(0, 1.0), (20, 0.7), (40, 0.4), (50, 0.2)]),
+        );
+        boss_hp_log.insert(
+            "Minion".to_string(),
+            make_log(vec![(20, 1.0), (30, 0.5), (40, 0.0)]),
+        );
+
+        let phases = detect_phases(&boss_hp_log, None, None);
+        assert_eq!(phases.len(), 1, "minion should not produce a separate phase");
+        assert_eq!(phases[0].boss_name, "Boss A");
+        assert_eq!(phases[0].phase_type, PhaseType::Normal);
     }
 
     #[test]
