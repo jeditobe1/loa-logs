@@ -342,3 +342,4 @@ pub fn migration_boss_hp(tx: &Transaction) -> Result<(), rusqlite::Error> {
 
     stmt.finalize()
 }
+

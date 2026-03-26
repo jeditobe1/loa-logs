@@ -12,6 +12,7 @@
   let { encounter }: { encounter: Encounter } = $props();
   let raidGate = $derived(raidGates[encounter.currentBossName]);
   const id = (page.params.id || "").toLocaleString();
+  let backHref = $derived(page.url.searchParams.get("back") ?? "/logs");
 
   let bossHpBars = $derived.by(() => {
     let boss = encounter.entities[encounter.currentBossName];
@@ -38,7 +39,7 @@
     <div class="flex flex-col px-1 py-4">
       <div class="flex gap-2 overflow-y-auto text-nowrap py-1 text-xs">
         <a
-          href="/logs"
+          href={backHref}
           class="bg-accent-500/70 hover:bg-accent-500/80 flex items-center gap-1 rounded-sm py-0.5 pl-1 pr-2"
         >
           <IconArrowLeft class="shrink-0" />

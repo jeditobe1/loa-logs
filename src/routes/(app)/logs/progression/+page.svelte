@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import { goto } from "$app/navigation";
   import {
     getEncountersByIds,
     getProgressionStats,
@@ -184,6 +185,26 @@
     })();
   });
 
+  // ──────────────────── Chart click navigation ────────────────────
+
+  function navigateToEncounter(dataIndex: number) {
+    const attempt = attempts[dataIndex];
+    if (!attempt) return;
+    const back = encodeURIComponent(page.url.pathname + page.url.search);
+    goto(`/logs/${attempt.id}?back=${back}`);
+  }
+
+  function clickableChart(el: HTMLElement, options: EChartsOptions) {
+    const handle = chartable(el, options);
+    handle.echartsInstance.on("click", (e: { dataIndex?: number }) => {
+      if (e.dataIndex != null) navigateToEncounter(e.dataIndex);
+    });
+    return {
+      destroy: handle.destroy,
+      update: (newOptions: EChartsOptions) => handle.update(newOptions)
+    };
+  }
+
   // ──────────────────── Chart helpers ────────────────────
 
   function makeLineChart(
@@ -193,9 +214,9 @@
     opts?: {
       yFormatter?: (v: number) => string;
       tooltipFormatter?: (params: { dataIndex: number; value: number }[]) => string;
-      markMinMax?: boolean;
       areaColor?: string;
       clearIndices?: Set<number>;
+      itemColorFn?: (dataIndex: number) => string;
     }
   ): EChartsOptions {
     if (data.length === 0) return {};
@@ -225,21 +246,17 @@
           smooth: true,
           lineStyle: { color },
           itemStyle: {
-            color: (params: { dataIndex: number }) => (clearSet.has(params.dataIndex) ? "#84cc16" : color)
+            color: opts?.itemColorFn
+              ? (params: { dataIndex: number }) => opts!.itemColorFn!(params.dataIndex)
+              : (params: { dataIndex: number }) => (clearSet.has(params.dataIndex) ? "#84cc16" : color)
           },
-          ...(opts?.markMinMax
-            ? {
-                markPoint: {
-                  label: { formatter: (params: { value: number }) => opts?.yFormatter ? opts.yFormatter(params.value) : abbreviateNumber(params.value) },
-                  data: [{ type: "max", name: "Best" }, { type: "min", name: "Worst" }]
-                }
-              }
-            : {}),
           ...(opts?.areaColor ? { areaStyle: { color: opts.areaColor } } : {})
         }
       ]
     };
   }
+
+  const phaseColors = ["#3b82f6", "#f59e0b", "#ef4444", "#a78bfa", "#06b6d4"];
 
   // ──────────────────── Shared charts ────────────────────
 
@@ -277,55 +294,134 @@
 
   let progressChart: EChartsOptions = $derived.by(() => {
     if (!hasWipeData || attempts.length === 0) return {};
-    return makeLineChart(
-      "Progress",
-      statsInOrder.map((s, i) => {
-        const cleared = attempts[i]?.cleared ?? false;
-        const score = s ? normalizedProgress(s, cleared) : null;
-        return score != null ? +(score * 100).toFixed(1) : null;
-      }),
-      "#22c55e",
-      {
-        yFormatter: (v) => `${v}%`,
-        markMinMax: true,
-        tooltipFormatter: (params) => {
-          const p = params[0];
-          const s = statsInOrder[p.dataIndex];
-          const cleared = attempts[p.dataIndex]?.cleared ?? false;
-          if (cleared) return `#${p.dataIndex + 1} (Clear)<br/>Progress: 100%`;
+
+    const completionData = statsInOrder.map((s, i) => {
+      const cleared = attempts[i]?.cleared ?? false;
+      const score = s ? normalizedProgress(s, cleared) : null;
+      return score != null ? +(score * 100).toFixed(1) : null;
+    });
+
+    const presentPhases = [...new Set(
+      statsInOrder.map((s, i) => (!attempts[i]?.cleared && s?.wipePhase != null ? s.wipePhase : null))
+        .filter((p): p is number => p != null)
+    )].sort((a, b) => a - b);
+    const hasClears = attempts.some((a) => a.cleared);
+
+    const scatterSeries = [
+      ...presentPhases.map((phase) => ({
+        name: `P${phase}`,
+        type: "scatter" as const,
+        data: statsInOrder.map((s, i) =>
+          !attempts[i]?.cleared && s?.wipePhase === phase ? completionData[i] : null
+        ),
+        itemStyle: { color: phaseColors[(phase - 1) % phaseColors.length] },
+        symbolSize: 8,
+        z: 3
+      })),
+      ...(hasClears ? [{
+        name: "Clear",
+        type: "scatter" as const,
+        data: statsInOrder.map((_, i) => attempts[i]?.cleared ? completionData[i] : null),
+        itemStyle: { color: "#84cc16" },
+        symbolSize: 8,
+        z: 3
+      }] : [])
+    ];
+
+    const legendNames = [...presentPhases.map((p) => `P${p}`), ...(hasClears ? ["Clear"] : [])];
+    const showLegend = presentPhases.length > 1 || hasClears;
+
+    return {
+      ...defaultOptions,
+      title: { text: "Completion %", textStyle: { color: "#e5e5e5", fontSize: 14 } },
+      legend: showLegend ? { data: legendNames, textStyle: { color: "#a3a3a3" }, top: 24 } : { show: false },
+      grid: { ...(defaultOptions.grid as object), top: showLegend ? "28%" : "18%" },
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: any[]) => {
+          const line = params.find((p: any) => p.seriesType === "line");
+          if (!line || line.value == null) return "";
+          const idx = line.dataIndex;
+          const s = statsInOrder[idx];
+          const cleared = attempts[idx]?.cleared ?? false;
+          if (cleared) return `#${idx + 1} (Clear)<br/>Completion: 100%`;
           const phaseLabel = s?.wipePhase ? `P${s.wipePhase}` : "";
           const withinPhase = s?.wipePhaseEndHp != null
             ? ` · ${((1 - s.wipePhaseEndHp) * 100).toFixed(1)}% depleted`
             : "";
-          return `#${p.dataIndex + 1}<br/>${phaseLabel}${withinPhase}<br/>Overall: ${p.value}%`;
+          return `#${idx + 1}<br/>${phaseLabel}${withinPhase}<br/>Completion: ${line.value}%`;
         }
-      }
-    );
+      },
+      xAxis: { type: "category", data: completionData.map((_, i) => `#${i + 1}`), axisLabel: { color: "#a3a3a3" } },
+      yAxis: { type: "value", axisLabel: { color: "#a3a3a3", formatter: (v: number) => `${v}%` } },
+      series: [
+        {
+          type: "line",
+          data: completionData,
+          smooth: true,
+          lineStyle: { color: "#22c55e" },
+          symbol: "none",
+          z: 2
+        },
+        ...scatterSeries
+      ]
+    };
   });
 
   // ──────────────────── My DPS charts ────────────────────
 
   let myDpsChart: EChartsOptions = $derived.by(() => {
     if (attempts.length === 0) return {};
-    return makeLineChart("My DPS", attempts.map((a) => a.myDps), "#8b5cf6", {
-      yFormatter: (v) => abbreviateNumber(v),
-      markMinMax: true,
-      tooltipFormatter: (params) => {
-        const p = params[0];
-        const a = attempts[p.dataIndex];
-        return `#${p.dataIndex + 1}${a?.cleared ? " (Clear)" : ""}<br/>DPS: ${abbreviateNumber(p.value)}`;
-      }
-    });
-  });
-
-  let myUdpsChart: EChartsOptions = $derived.by(() => {
-    if (attempts.length === 0) return {};
     const hasUdps = attempts.some((a) => a.udps && a.udps !== a.myDps);
-    if (!hasUdps) return {};
-    return makeLineChart("My Unbuffed DPS", attempts.map((a) => a.udps ?? null), "#06b6d4", {
-      yFormatter: (v) => abbreviateNumber(v),
-      markMinMax: true
-    });
+    const clearSet = new Set(attempts.map((a, i) => (a.cleared ? i : -1)).filter((i) => i >= 0));
+    if (!hasUdps) {
+      return makeLineChart("My DPS", attempts.map((a) => a.myDps), "#8b5cf6", {
+        yFormatter: (v) => abbreviateNumber(v),
+        tooltipFormatter: (params) => {
+          const p = params[0];
+          const a = attempts[p.dataIndex];
+          return `#${p.dataIndex + 1}${a?.cleared ? " (Clear)" : ""}<br/>DPS: ${abbreviateNumber(p.value)}`;
+        }
+      });
+    }
+    return {
+      ...defaultOptions,
+      title: { text: "My DPS", textStyle: { color: "#e5e5e5", fontSize: 14 } },
+      legend: { data: ["Buffed", "Unbuffed"], textStyle: { color: "#a3a3a3" }, top: 24 },
+      grid: { ...defaultOptions.grid as object, top: "28%" },
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: { dataIndex: number; value: number; seriesName: string }[]) => {
+          const idx = params[0]?.dataIndex;
+          const a = attempts[idx];
+          let s = `#${idx + 1}${a?.cleared ? " (Clear)" : ""}`;
+          for (const p of params) {
+            if (p.value != null) s += `<br/>${p.seriesName}: ${abbreviateNumber(p.value)}`;
+          }
+          return s;
+        }
+      },
+      xAxis: { type: "category", data: attempts.map((_, i) => `#${i + 1}`), axisLabel: { color: "#a3a3a3" } },
+      yAxis: { type: "value", axisLabel: { color: "#a3a3a3", formatter: (v: number) => abbreviateNumber(v) } },
+      series: [
+        {
+          name: "Buffed",
+          type: "line",
+          data: attempts.map((a) => a.myDps),
+          smooth: true,
+          lineStyle: { color: "#8b5cf6" },
+          itemStyle: { color: (p: { dataIndex: number }) => clearSet.has(p.dataIndex) ? "#84cc16" : "#8b5cf6" }
+        },
+        {
+          name: "Unbuffed",
+          type: "line",
+          data: attempts.map((a) => a.udps ?? null),
+          smooth: true,
+          lineStyle: { color: "#06b6d4", type: "dashed" },
+          itemStyle: { color: "#06b6d4" }
+        }
+      ]
+    };
   });
 
   // ──────────────────── Support charts ────────────────────
@@ -352,6 +448,7 @@
       ...defaultOptions,
       title: { text: "My Buff Uptime", textStyle: { color: "#e5e5e5", fontSize: 14 } },
       legend: { data: ["AP", "Brand", "Identity", "Hyper"], textStyle: { color: "#a3a3a3" }, top: 24 },
+      grid: { ...defaultOptions.grid as object, top: "28%" },
       tooltip: { trigger: "axis", valueFormatter: (v: number) => `${v.toFixed(1)}%` },
       xAxis: {
         type: "category",
@@ -371,22 +468,25 @@
   // Support DPS contribution: total party DPS minus sum of unbuffed DPS for my party
   let supportContribChart: EChartsOptions = $derived.by(() => {
     if (statsInOrder.length === 0) return {};
-    const contribData = statsInOrder.map((s) => {
+    const contribData = statsInOrder.map((s, i) => {
       if (!s) return 0;
+      const duration = (attempts[i]?.duration ?? 0) / 1000;
       const partyPlayers = getMyPartyPlayers(s);
       const totalPartyDps = partyPlayers.reduce((sum, p) => sum + p.dps, 0);
       const totalUnbuffed = partyPlayers.reduce((sum, p) => sum + (p.unbuffedDps ?? p.dps), 0);
-      return Math.max(0, totalPartyDps - totalUnbuffed);
+      return Math.round(Math.max(0, totalPartyDps - totalUnbuffed) * duration);
     });
     if (contribData.every((v) => v === 0)) return {};
-    return makeLineChart("My Support DPS Contribution", contribData, "#a78bfa", {
+    return makeLineChart("My Support Damage Contribution", contribData, "#a78bfa", {
       yFormatter: (v) => abbreviateNumber(v),
       areaColor: "rgba(167, 139, 250, 0.15)",
       tooltipFormatter: (params) => {
         const p = params[0];
         const s = statsInOrder[p.dataIndex];
-        const partyDps = s ? getMyPartyPlayers(s).reduce((sum, pl) => sum + pl.dps, 0) : 0;
-        return `#${p.dataIndex + 1}<br/>Contribution: ${abbreviateNumber(p.value)}<br/>Party DPS: ${abbreviateNumber(partyDps)}`;
+        const a = attempts[p.dataIndex];
+        const duration = (a?.duration ?? 0) / 1000;
+        const partyDamage = s ? Math.round(getMyPartyPlayers(s).reduce((sum, pl) => sum + pl.dps, 0) * duration) : 0;
+        return `#${p.dataIndex + 1}<br/>Contribution: ${abbreviateNumber(p.value)}<br/>Party Damage: ${abbreviateNumber(partyDamage)}`;
       }
     });
   });
@@ -395,17 +495,22 @@
 
   let raidDpsChart: EChartsOptions = $derived.by(() => {
     if (statsInOrder.length === 0) return {};
-    return makeLineChart("Total Raid DPS", statsInOrder.map((s) => s?.totalDps ?? null), "#8b5cf6", {
+    const totalDamageData = statsInOrder.map((s, i) => {
+      if (!s) return null;
+      const duration = (attempts[i]?.duration ?? 0) / 1000;
+      return Math.round(s.totalDps * duration);
+    });
+    return makeLineChart("Total Raid Damage", totalDamageData, "#8b5cf6", {
       yFormatter: (v) => abbreviateNumber(v),
-      markMinMax: true,
       tooltipFormatter: (params) => {
         const p = params[0];
         const s = statsInOrder[p.dataIndex];
         const a = attempts[p.dataIndex];
+        const duration = (a?.duration ?? 0) / 1000;
         let lines = `#${p.dataIndex + 1}${a?.cleared ? " (Clear)" : ""}<br/>Total: ${abbreviateNumber(p.value)}`;
         if (s) {
           for (const player of s.players) {
-            lines += `<br/>${player.name}: ${abbreviateNumber(player.dps)}`;
+            lines += `<br/>${player.name}: ${abbreviateNumber(Math.round(player.dps * duration))}`;
           }
         }
         return lines;
@@ -413,46 +518,6 @@
     });
   });
 
-  let raidDeathsChart: EChartsOptions = $derived.by(() => {
-    if (statsInOrder.length === 0) return {};
-    const deathData = statsInOrder.map((s) => s?.players.filter((p) => p.isDead).length ?? 0);
-    if (deathData.every((d) => d === 0)) return {};
-    return {
-      ...defaultOptions,
-      title: { text: "Deaths Per Attempt", textStyle: { color: "#e5e5e5", fontSize: 14 } },
-      tooltip: {
-        trigger: "axis",
-        formatter: (params: { dataIndex: number; value: number }[]) => {
-          const p = params[0];
-          const s = statsInOrder[p.dataIndex];
-          let lines = `#${p.dataIndex + 1} — ${p.value} death${p.value !== 1 ? "s" : ""}`;
-          if (s) {
-            for (const player of s.players.filter((pl) => pl.isDead)) {
-              lines += `<br/><span style="color:#ef4444">✗</span> ${player.name}`;
-            }
-          }
-          return lines;
-        }
-      },
-      xAxis: {
-        type: "category",
-        data: statsInOrder.map((_, i) => `#${i + 1}`),
-        axisLabel: { color: "#a3a3a3" }
-      },
-      yAxis: { type: "value", minInterval: 1, axisLabel: { color: "#a3a3a3" } },
-      series: [
-        {
-          name: "Deaths",
-          type: "bar",
-          data: deathData,
-          itemStyle: {
-            color: (params: { dataIndex: number }) =>
-              attempts[params.dataIndex]?.cleared ? "#84cc16" : "#ef4444"
-          }
-        }
-      ]
-    };
-  });
 
   // Raid: per-player DPS stacked area
   let raidPlayerDpsChart: EChartsOptions = $derived.by(() => {
@@ -476,8 +541,9 @@
 
     return {
       ...defaultOptions,
-      title: { text: "Individual Player DPS", textStyle: { color: "#e5e5e5", fontSize: 14 } },
+      title: { text: "Individual Player Damage", textStyle: { color: "#e5e5e5", fontSize: 14 } },
       legend: { data: allNames, textStyle: { color: "#a3a3a3", fontSize: 10 }, top: 24, type: "scroll" },
+      grid: { ...defaultOptions.grid as object, top: "28%" },
       tooltip: { trigger: "axis" },
       xAxis: {
         type: "category",
@@ -494,9 +560,10 @@
         stack: "total",
         areaStyle: {},
         emphasis: { focus: "series" as const },
-        data: statsInOrder.map((s) => {
+        data: statsInOrder.map((s, i) => {
           const player = s?.players.find((p) => p.name === name);
-          return player ? player.dps : 0;
+          const duration = (attempts[i]?.duration ?? 0) / 1000;
+          return player ? Math.round(player.dps * duration) : 0;
         }),
         lineStyle: { color: colors[idx % colors.length], width: 1 },
         itemStyle: { color: colors[idx % colors.length] }
@@ -654,28 +721,28 @@
           <!-- Overview: key charts from each area -->
           {#if isLocalSupport && Object.keys(supportBuffChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={supportBuffChart}></div>
+              <div class="h-64" use:clickableChart={supportBuffChart}></div>
             </div>
           {:else}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={myDpsChart}></div>
+              <div class="h-64" use:clickableChart={myDpsChart}></div>
             </div>
           {/if}
           {#if Object.keys(raidDpsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={raidDpsChart}></div>
+              <div class="h-64" use:clickableChart={raidDpsChart}></div>
             </div>
           {/if}
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-            <div class="h-64" use:chartable={durationChart}></div>
+            <div class="h-64" use:clickableChart={durationChart}></div>
           </div>
           {#if hasWipeData && Object.keys(progressChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={progressChart}></div>
+              <div class="h-64" use:clickableChart={progressChart}></div>
             </div>
           {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={barsChart}></div>
+              <div class="h-64" use:clickableChart={barsChart}></div>
             </div>
           {/if}
           {@render raidCard()}
@@ -683,23 +750,18 @@
 
         {#if viewMode === "dps"}
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-            <div class="h-64" use:chartable={myDpsChart}></div>
+            <div class="h-64" use:clickableChart={myDpsChart}></div>
           </div>
-          {#if Object.keys(myUdpsChart).length > 0}
-            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={myUdpsChart}></div>
-            </div>
-          {/if}
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-            <div class="h-64" use:chartable={durationChart}></div>
+            <div class="h-64" use:clickableChart={durationChart}></div>
           </div>
           {#if hasWipeData && Object.keys(progressChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={progressChart}></div>
+              <div class="h-64" use:clickableChart={progressChart}></div>
             </div>
           {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={barsChart}></div>
+              <div class="h-64" use:clickableChart={barsChart}></div>
             </div>
           {/if}
         {/if}
@@ -707,24 +769,24 @@
         {#if viewMode === "support"}
           {#if Object.keys(supportBuffChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={supportBuffChart}></div>
+              <div class="h-64" use:clickableChart={supportBuffChart}></div>
             </div>
           {/if}
           {#if Object.keys(supportContribChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={supportContribChart}></div>
+              <div class="h-64" use:clickableChart={supportContribChart}></div>
             </div>
           {/if}
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-            <div class="h-64" use:chartable={durationChart}></div>
+            <div class="h-64" use:clickableChart={durationChart}></div>
           </div>
           {#if hasWipeData && Object.keys(progressChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={progressChart}></div>
+              <div class="h-64" use:clickableChart={progressChart}></div>
             </div>
           {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={barsChart}></div>
+              <div class="h-64" use:clickableChart={barsChart}></div>
             </div>
           {/if}
         {/if}
@@ -732,29 +794,24 @@
         {#if viewMode === "raid"}
           {#if Object.keys(raidDpsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={raidDpsChart}></div>
+              <div class="h-64" use:clickableChart={raidDpsChart}></div>
             </div>
           {/if}
           {#if Object.keys(raidPlayerDpsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={raidPlayerDpsChart}></div>
-            </div>
-          {/if}
-          {#if Object.keys(raidDeathsChart).length > 0}
-            <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={raidDeathsChart}></div>
+              <div class="h-64" use:clickableChart={raidPlayerDpsChart}></div>
             </div>
           {/if}
           <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-            <div class="h-64" use:chartable={durationChart}></div>
+            <div class="h-64" use:clickableChart={durationChart}></div>
           </div>
           {#if hasWipeData && Object.keys(progressChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={progressChart}></div>
+              <div class="h-64" use:clickableChart={progressChart}></div>
             </div>
           {:else if hasWipeBars && Object.keys(barsChart).length > 0}
             <div class="rounded-md border border-neutral-700/70 bg-neutral-800/30 p-2">
-              <div class="h-64" use:chartable={barsChart}></div>
+              <div class="h-64" use:clickableChart={barsChart}></div>
             </div>
           {/if}
           {@render raidCard()}
