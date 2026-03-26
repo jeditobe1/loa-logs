@@ -106,7 +106,6 @@ export interface ProgressionPlayerStats {
   name: string;
   classId: number;
   dps: number;
-  isDead: boolean;
   supportAp: number | null;
   supportBrand: number | null;
   supportIdentity: number | null;

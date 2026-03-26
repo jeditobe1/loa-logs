@@ -68,7 +68,6 @@ pub struct ProgressionPlayerStats {
     pub name: String,
     pub class_id: i32,
     pub dps: i64,
-    pub is_dead: bool,
     pub support_ap: Option<f32>,
     pub support_brand: Option<f32>,
     pub support_identity: Option<f32>,
